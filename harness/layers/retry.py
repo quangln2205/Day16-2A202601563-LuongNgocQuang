@@ -87,15 +87,24 @@ class Retry(Middleware):
 
     def wrap_tool_call(self, ctx, call, name, args):
         result = call(name, args)
-        # TODO (§7): khoảng 8-12 dòng.
-        #  1. Trong khi số lần đã thử < self.max_attempts VÀ kết quả còn
-        #     hỏng — tức `(not result.ok) or is_degraded(result.content)` —
-        #     thì gọi lại `call(name, args)` với ĐÚNG name/args cũ.
-        #  2. DỪNG THỬ LẠI khi ngân sách đã cạn: nếu
-        #     `ctx.max_tool_calls` khác None và
-        #     `ctx.tools.calls >= ctx.max_tool_calls - self.reserve`
-        #     thì đừng gọi thêm lượt nào nữa (xem phần cảnh báo ở trên).
-        #  3. Trả về kết quả cuối cùng (kể cả khi vẫn hỏng: agent phải
-        #     nhìn thấy sự thật, đừng bịa nội dung thay nó).
-        #  4. Ghi số lần đã thử vào ctx.state để gỡ lỗi.
-        return result  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        
+        # Check if we should retry
+        should_retry = (not result.ok or is_degraded(result.content))
+        
+        # Check if we have budget to retry
+        budget_exhausted = False
+        if ctx.max_tool_calls is not None:
+            budget_exhausted = ctx.tools.calls >= ctx.max_tool_calls - self.reserve
+            
+        # Track attempts
+        attempt_key = f"retry_{name}_{hash(str(args))}"
+        attempts = ctx.state.get(attempt_key, 0)
+        
+        # Retry if needed and budget allows
+        if should_retry and not budget_exhausted and attempts < self.max_attempts:
+            attempts += 1
+            ctx.state[attempt_key] = attempts
+            return self.wrap_tool_call(ctx, call, name, args)
+            
+        # Return final result
+        return result

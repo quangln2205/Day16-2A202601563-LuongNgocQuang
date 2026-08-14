@@ -79,16 +79,82 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        # Get claims from report
+        claims = report.get("claims")
+        if not isinstance(claims, list):
+            return report
+            
+        # Process each claim
+        valid_claims = []
+        abstain = False
+        
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+                
+            text = claim.get("text", "")
+            if not text:
+                continue
+                
+            # Check if claim text is in observed text (valid evidence)
+            if ctx.saw(text):
+                valid_claims.append(claim)
+            else:
+                # Try to split the claim (case c: merged sentences)
+                split_claims = self._split_claim(ctx, text)
+                if split_claims:
+                    valid_claims.extend(split_claims)
+                    abstain = True
+                else:
+                    # This is fabrication - skip this claim
+                    continue
+                    
+        # If no valid claims left, set abstain and clear claims/citations
+        if not valid_claims:
+            report["abstain"] = True
+            report["claims"] = []
+            report["citations"] = []
+            report["answer"] = "Không đủ căn cứ để đưa ra câu trả lời."
+        else:
+            # Update claims and citations
+            report["claims"] = valid_claims
+            # Update citations to match the valid claims
+            new_citations = []
+            for claim in valid_claims:
+                doc_id = claim.get("doc_id")
+                if doc_id and doc_id not in new_citations:
+                    new_citations.append(doc_id)
+            report["citations"] = new_citations
+            
+        return report
+        
+    def _split_claim(self, ctx, text):
+        """Try to split a merged claim into two parts."""
+        # Look for conjunctions that might indicate merged sentences
+        conjunctions = [" và "]
+        for conj in conjunctions:
+            parts = text.split(conj)
+            if len(parts) == 2:
+                part1, part2 = parts[0].strip(), parts[1].strip()
+                
+                # Check if both parts exist in observed text
+                if ctx.saw(part1) and ctx.saw(part2):
+                    # Find which documents contain these parts
+                    doc1 = self._find_document_with_text(ctx, part1)
+                    doc2 = self._find_document_with_text(ctx, part2)
+                    
+                    if doc1 and doc2:
+                        # Create two claims with correct doc_ids
+                        return [
+                            {"text": part1, "doc_id": doc1},
+                            {"text": part2, "doc_id": doc2}
+                        ]
+                        
+        return None
+        
+    def _find_document_with_text(self, ctx, text):
+        """Find the document ID that contains the given text."""
+        for doc in ctx.corpus.docs:
+            if doc.body and text in doc.body:
+                return doc.doc_id
+        return None

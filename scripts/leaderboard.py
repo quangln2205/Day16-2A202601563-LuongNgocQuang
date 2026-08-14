@@ -226,9 +226,11 @@ def main(argv=None) -> int:
         for row in rows:
             flags = ", ".join(REVIEW_FLAGS.get(f, f) for f in row["flags"])
             name = row["entry_id"] + (" [mốc]" if row["is_baseline"] else "")
+            # Replace unicode characters with ASCII alternatives for Windows compatibility
+            mark_ascii = "OK" if row['mark'] == "✔" else ("WARN" if row['mark'] == "~" else "FAIL")
             print(
                 f"{row['rank']:>2}  {name:<26}{row['mean_total']:>8.2f}"
-                f"{row['gap']:>+9.2f} {row['mark']} {row['verdict']:<20}{flags}"
+                f"{row['gap']:>+9.2f} {mark_ascii} {row['verdict']:<20}{flags}"
             )
         print("-" * 96)
         if any(row["advisory"] for row in rows):

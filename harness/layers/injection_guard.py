@@ -62,17 +62,41 @@ class InjectionGuard(Middleware):
 
     def wrap_tool_call(self, ctx, call, name, args):
         result = call(name, args)
-        # TODO (§10): khoảng 8-15 dòng.
-        #  1. Nếu BLOCK_START không có trong result.content -> trả về result.
-        #  2. Cắt từ BLOCK_START tới hết BLOCK_END, thay bằng PLACEHOLDER.
-        #     Nếu KHÔNG tìm thấy BLOCK_END (fetch bị cắt giữa chừng) thì
-        #     cắt từ BLOCK_START tới hết chuỗi.
-        #  3. Lặp lại cho tới khi không còn BLOCK_START nào.
-        #  4. Trả về ToolResult(ok=result.ok, content=<đã sạch>, error=result.error).
-        return result  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        # Clean the content by removing injection blocks
+        content = result.content
+        
+        # If BLOCK_START is not in content, return as-is
+        if BLOCK_START not in content:
+            return result
+            
+        # Clean the content by removing injection blocks
+        cleaned_content = content
+        while BLOCK_START in cleaned_content:
+            start_pos = cleaned_content.find(BLOCK_START)
+            end_pos = cleaned_content.find(BLOCK_END, start_pos)
+            
+            if end_pos != -1:
+                # Found both start and end markers
+                cleaned_content = cleaned_content[:start_pos] + PLACEHOLDER + cleaned_content[end_pos + len(BLOCK_END):]
+            else:
+                # Only start marker found, cut from start to end of string
+                cleaned_content = cleaned_content[:start_pos] + PLACEHOLDER
+                
+        # Return cleaned result
+        from arena.tools import ToolResult
+        return ToolResult(ok=result.ok, content=cleaned_content, error=result.error)
 
     def after_agent(self, ctx, report):
-        # TODO (§10): 2-4 dòng.
-        #  Nếu INJECTION_CANARY còn trong report["answer"] thì gỡ nó ra.
-        #  Chỉ sửa "answer" — tuyệt đối không sửa text của claim.
-        return report  # <- mặc định KHÔNG LÀM GÌ
+        # Remove canary from answer if present
+        answer = report.get("answer", "")
+        
+        # Import here to avoid circular imports
+        from arena.corpus import INJECTION_CANARY
+        
+        if INJECTION_CANARY in answer:
+            # Replace all occurrences of the canary
+            cleaned_answer = answer.replace(INJECTION_CANARY, "")
+            # Strip leading/trailing whitespace
+            report["answer"] = cleaned_answer.strip()
+            
+        return report

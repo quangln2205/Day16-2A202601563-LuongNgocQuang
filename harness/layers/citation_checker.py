@@ -68,16 +68,97 @@ class CitationChecker(Middleware):
     name = "citation_checker"
 
     def after_agent(self, ctx, report):
-        # TODO (§11): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; bỏ qua nếu rỗng hoặc ctx.corpus là None.
-        #  2. Với mỗi claim, gọi ctx.corpus.get(claim["doc_id"]).
-        #     Nếu tài liệu tồn tại VÀ claim["text"] khớp NGUYÊN VĂN một
-        #     DÒNG trong body của nó (không phải chỉ "nằm trong body")
-        #     -> trích dẫn đã đúng, giữ nguyên claim.
-        #  3. Nếu không: tìm trong ctx.corpus.docs tài liệu đầu tiên thoả
-        #     doc.body in ctx.observed_text  và  claim["text"] khớp
-        #     nguyên văn một DÒNG của doc.body -> đó là nguồn thật.
-        #     Đổi doc_id sang nó, GIỮ NGUYÊN text.
-        #  4. Không tìm được nguồn nào -> để `critic` xử lý, đừng bịa doc_id.
-        #  5. Cập nhật report["citations"] = danh sách doc_id đã sắp xếp.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        # Get claims from report
+        claims = report.get("claims")
+        if not isinstance(claims, list) or ctx.corpus is None:
+            return report
+            
+        # Process each claim
+        updated_claims = []
+        seen_doc_ids = set()
+        
+        for claim in claims:
+            if not isinstance(claim, dict):
+                updated_claims.append(claim)
+                continue
+                
+            text = claim.get("text", "")
+            doc_id = claim.get("doc_id")
+            
+            if not text:
+                updated_claims.append(claim)
+                continue
+                
+            # Check if the current doc_id is valid
+            if doc_id:
+                doc = ctx.corpus.get(doc_id)
+                if doc and self._is_exact_line_match(text, doc.body):
+                    # Current doc_id is correct
+                    updated_claims.append(claim)
+                    seen_doc_ids.add(doc_id)
+                    continue
+                    
+            # Try to find the correct document
+            correct_doc_id = self._find_correct_doc_id(ctx, text)
+            if correct_doc_id:
+                # Update claim with correct doc_id
+                updated_claim = claim.copy()
+                updated_claim["doc_id"] = correct_doc_id
+                updated_claims.append(updated_claim)
+                seen_doc_ids.add(correct_doc_id)
+            else:
+                # No correct document found, keep original claim
+                # But let's also check if the text is in any observed document
+                # even if it's not in the current doc_id
+                found_doc_id = self._find_any_observed_doc_with_text(ctx, text)
+                if found_doc_id:
+                    # Update claim with found doc_id
+                    updated_claim = claim.copy()
+                    updated_claim["doc_id"] = found_doc_id
+                    updated_claims.append(updated_claim)
+                    seen_doc_ids.add(found_doc_id)
+                else:
+                    updated_claims.append(claim)
+                
+        # Update citations
+        report["claims"] = updated_claims
+        report["citations"] = list(seen_doc_ids)
+        
+        return report
+        
+    def _find_any_observed_doc_with_text(self, ctx, text):
+        """Find any observed document that contains the text as an exact line."""
+        # First check if the text is in any observed document
+        for doc in ctx.corpus.docs:
+            if doc.body and doc.doc_id in ctx.observed_text:
+                # Check if text is an exact line match in this document
+                lines = doc.body.split('\n')
+                for line in lines:
+                    if line.strip() == text.strip():
+                        return doc.doc_id
+        return None
+        
+    def _is_exact_line_match(self, text, body):
+        """Check if text matches exactly one line in the document body."""
+        if not body:
+            return False
+        lines = body.split('\n')
+        # Check if the text is exactly one line (not a substring)
+        # We need to check if the text is a complete line in the document
+        # The text should be exactly one line, not a substring of a line
+        for line in lines:
+            if line.strip() == text.strip():
+                return True
+        return False
+        
+    def _find_correct_doc_id(self, ctx, text):
+        """Find the correct document ID that contains the text as an exact line."""
+        # Check all documents for the text
+        for doc in ctx.corpus.docs:
+            if doc.body and doc.doc_id in ctx.observed_text:
+                # Check if text is an exact line match in this document
+                lines = doc.body.split('\n')
+                for line in lines:
+                    if line.strip() == text.strip():
+                        return doc.doc_id
+        return None
